@@ -26,7 +26,7 @@
 
 <div class="app-card">
     <h2>My Schedule</h2>
-    
+
     <div class="input-group">
         <input type="text" id="taskName" placeholder="Task description...">
         <input type="datetime-local" id="taskTime">
@@ -39,6 +39,15 @@
 <script>
     let tasks = JSON.parse(localStorage.getItem('mobileTasks')) || [];
 
+    // Persisted "already notified" flags so refresh doesn't re-alert
+    let notified = JSON.parse(localStorage.getItem('mobileNotified')) || {
+        atTime: {},   // { [taskId]: true }
+        tenMin: {}    // { [taskId]: true }
+    };
+
+    // Keep timer handles so we can cancel/reschedule cleanly
+    const timers = new Map(); // taskId -> { atTimeTimeoutId, tenMinTimeoutId }
+
     // Request permission on first interaction
     async function requestNotifyPermission() {
         if (!("Notification" in window)) return false;
@@ -46,21 +55,101 @@
         return permission === "granted";
     }
 
+    function saveNotified() {
+        localStorage.setItem('mobileNotified', JSON.stringify(notified));
+    }
+
     function saveTasks() {
         localStorage.setItem('mobileTasks', JSON.stringify(tasks));
         renderTasks();
+        rescheduleAll();
+    }
+
+    function clearAllTimers() {
+        for (const { atTimeTimeoutId, tenMinTimeoutId } of timers.values()) {
+            if (atTimeTimeoutId) clearTimeout(atTimeTimeoutId);
+            if (tenMinTimeoutId) clearTimeout(tenMinTimeoutId);
+        }
+        timers.clear();
+    }
+
+    function scheduleTaskNotifications(task) {
+        if (!("Notification" in window)) return;
+
+        const now = Date.now();
+        const msUntilStart = task.startTime - now;
+        const msUntilTenMin = task.startTime - (10 * 60 * 1000) - now;
+
+        if (!timers.has(task.id)) {
+            timers.set(task.id, { atTimeTimeoutId: null, tenMinTimeoutId: null });
+        }
+        const entry = timers.get(task.id);
+
+        // Optional: 10 minutes before
+        if (msUntilTenMin > 0 && !notified.tenMin[task.id]) {
+            entry.tenMinTimeoutId = setTimeout(() => {
+                if (notified.tenMin[task.id]) return;
+
+                new Notification(`Upcoming: ${task.name}`, {
+                    body: `Starts in 10 minutes`,
+                    tag: `tenmin-${task.id}`,
+                    renotify: false,
+                    silent: false
+                });
+
+                notified.tenMin[task.id] = true;
+                saveNotified();
+            }, msUntilTenMin);
+        }
+
+        // Real-time notification at exact task time
+        if (msUntilStart > 0 && !notified.atTime[task.id]) {
+            entry.atTimeTimeoutId = setTimeout(() => {
+                if (notified.atTime[task.id]) return;
+
+                new Notification(`Now: ${task.name}`, {
+                    body: `It’s time to start.`,
+                    tag: `attime-${task.id}`,
+                    renotify: false,
+                    silent: false
+                });
+
+                notified.atTime[task.id] = true;
+                saveNotified();
+            }, msUntilStart);
+        }
+    }
+
+    function rescheduleAll() {
+        clearAllTimers();
+
+        // Cleanup notification flags for tasks that no longer exist
+        const ids = new Set(tasks.map(t => String(t.id)));
+        for (const k of Object.keys(notified.atTime)) if (!ids.has(String(k))) delete notified.atTime[k];
+        for (const k of Object.keys(notified.tenMin)) if (!ids.has(String(k))) delete notified.tenMin[k];
+        saveNotified();
+
+        // Schedule future tasks
+        tasks.forEach(task => {
+            if (task.startTime <= Date.now()) return;
+            scheduleTaskNotifications(task);
+        });
     }
 
     async function addTask() {
         const nameInput = document.getElementById('taskName');
         const timeInput = document.getElementById('taskTime');
-        
+
         if (!nameInput.value || !timeInput.value) {
             alert("Please fill in all fields");
             return;
         }
 
         const hasPermission = await requestNotifyPermission();
+        if (!hasPermission) {
+            alert("Notifications are not allowed. Please enable them in browser settings.");
+            // You can still keep the task even if notifications are blocked.
+        }
 
         const newTask = {
             id: Date.now(),
@@ -69,13 +158,21 @@
         };
 
         tasks.push(newTask);
+
+        // reset flags for this task
+        notified.atTime[newTask.id] = false;
+        notified.tenMin[newTask.id] = false;
+        saveNotified();
+
         saveTasks();
 
-        // 1. Immediate Notification for Task Added
+        // Immediate confirmation
         if (hasPermission) {
-            new Notification("Task Scheduled! ✅", {
-                body: `"${newTask.name}" added for ${new Date(newTask.startTime).toLocaleTimeString()}`,
-                icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
+            new Notification("Task Scheduled", {
+                body: `"${newTask.name}" scheduled for ${new Date(newTask.startTime).toLocaleString()}`,
+                icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png",
+                tag: `added-${newTask.id}`,
+                renotify: false
             });
         }
 
@@ -85,53 +182,41 @@
 
     function deleteTask(id) {
         tasks = tasks.filter(t => t.id !== id);
+
+        // cleanup notified flags + timers
+        delete notified.atTime[id];
+        delete notified.tenMin[id];
+        saveNotified();
+
         saveTasks();
     }
 
     function renderTasks() {
         const container = document.getElementById('taskList');
-        container.innerHTML = tasks.length === 0 ? '<p style="color:#94a3b8; text-align:center;">No upcoming tasks</p>' : '';
-        
-        tasks.sort((a,b) => a.startTime - b.startTime).forEach(t => {
-            const div = document.createElement('div');
-            div.className = 'task-item';
-            div.innerHTML = `
-                <div>
-                    <span class="task-name">${t.name}</span>
-                    <span class="task-time">${new Date(t.startTime).toLocaleString()}</span>
-                </div>
-                <button class="btn-delete" onclick="deleteTask(${t.id})">Delete</button>
-            `;
-            container.appendChild(div);
-        });
+        container.innerHTML = tasks.length === 0
+            ? '<p style="color:#94a3b8; text-align:center;">No upcoming tasks</p>'
+            : '';
+
+        tasks
+            .slice()
+            .sort((a, b) => a.startTime - b.startTime)
+            .forEach(t => {
+                const div = document.createElement('div');
+                div.className = 'task-item';
+                div.innerHTML = `
+                    <div>
+                        <span class="task-name">${t.name}</span>
+                        <span class="task-time">${new Date(t.startTime).toLocaleString()}</span>
+                    </div>
+                    <button class="btn-delete" onclick="deleteTask(${t.id})">Delete</button>
+                `;
+                container.appendChild(div);
+            });
     }
 
-    // 2. Background Countdown Monitoring
-    setInterval(() => {
-        const now = Date.now();
-        const tenMins = 10 * 60 * 1000;
-
-        tasks.forEach(task => {
-            const diff = task.startTime - now;
-            
-            // Only notify if within the 10-minute window
-            if (diff <= tenMins && diff > 0) {
-                const secsTotal = Math.floor(diff / 1000);
-                const mins = Math.floor(secsTotal / 60);
-                const secs = secsTotal % 60;
-
-                new Notification(`Upcoming: ${task.name}`, {
-                    body: `Starting in ${mins}m ${secs}s`,
-                    tag: `countdown-${task.id}`, // Prevents multiple notification windows
-                    silent: true,
-                    renotify: false
-                });
-            }
-        });
-    }, 1000);
-
-    // Initial render
+    // Initial render + scheduling
     renderTasks();
+    rescheduleAll();
 </script>
 
 </body>
