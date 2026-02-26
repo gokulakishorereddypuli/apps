@@ -2,124 +2,137 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Persistent Task Scheduler</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Task Notifier Pro</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 500px; margin: 2rem auto; padding: 0 1rem; background-color: #f4f4f9; }
-        .container { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .input-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
-        input, button { padding: 10px; border-radius: 6px; border: 1px solid #ddd; }
-        button { background-color: #2563eb; color: white; cursor: pointer; border: none; font-weight: bold; }
-        button.delete-btn { background-color: #ef4444; padding: 5px 10px; font-size: 0.8rem; }
-        .task-item { border-bottom: 1px solid #eee; padding: 12px 0; display: flex; justify-content: space-between; align-items: center; }
-        .task-info { flex-grow: 1; }
-        .status-badge { font-size: 0.75rem; color: #666; background: #f0f0f0; padding: 2px 8px; border-radius: 12px; }
+        :root { --primary: #2563eb; --danger: #ef4444; --bg: #f8fafc; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .app-card { width: 100%; max-width: 450px; background: white; padding: 25px; border-radius: 16px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        h2 { margin-top: 0; color: #1e293b; font-size: 1.5rem; }
+        .input-group { display: flex; flex-direction: column; gap: 12px; margin-bottom: 25px; }
+        input { padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 1rem; outline: none; }
+        input:focus { border-color: var(--primary); ring: 2px var(--primary); }
+        button { padding: 12px; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+        .btn-add { background: var(--primary); color: white; }
+        .btn-delete { background: #fee2e2; color: var(--danger); padding: 6px 12px; font-size: 0.85rem; }
+        .task-list { border-top: 1px solid #f1f5f9; }
+        .task-item { display: flex; justify-content: space-between; align-items: center; padding: 15px 0; border-bottom: 1px solid #f1f5f9; }
+        .task-name { font-weight: 500; color: #334155; display: block; }
+        .task-time { font-size: 0.85rem; color: #64748b; }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <h2>Task Notifications</h2>
+<div class="app-card">
+    <h2>My Schedule</h2>
     
     <div class="input-group">
-        <input type="text" id="taskName" placeholder="What needs to be done?">
+        <input type="text" id="taskName" placeholder="Task description...">
         <input type="datetime-local" id="taskTime">
-        <button onclick="addTask()">Save Task</button>
+        <button class="btn-add" onclick="addTask()">Add Task & Enable Alerts</button>
     </div>
 
-    <div id="taskList"></div>
+    <div id="taskList" class="task-list"></div>
 </div>
 
 <script>
-    // Load tasks from localStorage on startup, or default to empty array
-    let tasks = JSON.parse(localStorage.getItem('myTodoTasks')) || [];
+    let tasks = JSON.parse(localStorage.getItem('mobileTasks')) || [];
 
-    window.onload = () => {
-        if ("Notification" in window) {
-            Notification.requestPermission();
-        }
-        renderTasks();
-    };
-
-    function saveToDisk() {
-        localStorage.setItem('myTodoTasks', JSON.stringify(tasks));
+    // Request permission on first interaction
+    async function requestNotifyPermission() {
+        if (!("Notification" in window)) return false;
+        const permission = await Notification.requestPermission();
+        return permission === "granted";
     }
 
-    function addTask() {
-        const name = document.getElementById('taskName').value;
-        const time = document.getElementById('taskTime').value;
+    function saveTasks() {
+        localStorage.setItem('mobileTasks', JSON.stringify(tasks));
+        renderTasks();
+    }
 
-        if (!name || !time) return alert("Please fill in both fields");
+    async function addTask() {
+        const nameInput = document.getElementById('taskName');
+        const timeInput = document.getElementById('taskTime');
+        
+        if (!nameInput.value || !timeInput.value) {
+            alert("Please fill in all fields");
+            return;
+        }
 
-        const task = {
+        const hasPermission = await requestNotifyPermission();
+
+        const newTask = {
             id: Date.now(),
-            name,
-            startTime: new Date(time).getTime(),
+            name: nameInput.value,
+            startTime: new Date(timeInput.value).getTime()
         };
 
-        tasks.push(task);
-        saveToDisk();
-        renderTasks();
-        
-        // Reset inputs
-        document.getElementById('taskName').value = '';
-        document.getElementById('taskTime').value = '';
+        tasks.push(newTask);
+        saveTasks();
+
+        // 1. Immediate Notification for Task Added
+        if (hasPermission) {
+            new Notification("Task Scheduled! ✅", {
+                body: `"${newTask.name}" added for ${new Date(newTask.startTime).toLocaleTimeString()}`,
+                icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
+            });
+        }
+
+        nameInput.value = '';
+        timeInput.value = '';
     }
 
     function deleteTask(id) {
         tasks = tasks.filter(t => t.id !== id);
-        saveToDisk();
-        renderTasks();
+        saveTasks();
     }
 
     function renderTasks() {
-        const list = document.getElementById('taskList');
-        if (tasks.length === 0) {
-            list.innerHTML = '<p style="color: #999; text-align: center;">No tasks scheduled.</p>';
-            return;
-        }
-
-        list.innerHTML = tasks.sort((a,b) => a.startTime - b.startTime).map(t => `
-            <div class="task-item">
-                <div class="task-info">
-                    <strong>${t.name}</strong><br>
-                    <small>${new Date(t.startTime).toLocaleString()}</small>
+        const container = document.getElementById('taskList');
+        container.innerHTML = tasks.length === 0 ? '<p style="color:#94a3b8; text-align:center;">No upcoming tasks</p>' : '';
+        
+        tasks.sort((a,b) => a.startTime - b.startTime).forEach(t => {
+            const div = document.createElement('div');
+            div.className = 'task-item';
+            div.innerHTML = `
+                <div>
+                    <span class="task-name">${t.name}</span>
+                    <span class="task-time">${new Date(t.startTime).toLocaleString()}</span>
                 </div>
-                <button class="delete-btn" onclick="deleteTask(${t.id})">Remove</button>
-            </div>
-        `).join('');
+                <button class="btn-delete" onclick="deleteTask(${t.id})">Delete</button>
+            `;
+            container.appendChild(div);
+        });
     }
 
-    // Checking logic for notifications
+    // 2. Background Countdown Monitoring
     setInterval(() => {
         const now = Date.now();
-        const tenMinutesInMs = 10 * 60 * 1000;
+        const tenMins = 10 * 60 * 1000;
 
         tasks.forEach(task => {
-            const timeLeft = task.startTime - now;
+            const diff = task.startTime - now;
+            
+            // Only notify if within the 10-minute window
+            if (diff <= tenMins && diff > 0) {
+                const secsTotal = Math.floor(diff / 1000);
+                const mins = Math.floor(secsTotal / 60);
+                const secs = secsTotal % 60;
 
-            // Trigger notification only if within the 10-minute window and not yet started
-            if (timeLeft <= tenMinutesInMs && timeLeft > 0) {
-                sendUpdate(task, timeLeft);
+                new Notification(`Upcoming: ${task.name}`, {
+                    body: `Starting in ${mins}m ${secs}s`,
+                    tag: `countdown-${task.id}`, // Prevents multiple notification windows
+                    silent: true,
+                    renotify: false
+                });
             }
         });
     }, 1000);
 
-    function sendUpdate(task, timeLeft) {
-        if (Notification.permission !== "granted") return;
-
-        const totalSeconds = Math.floor(timeLeft / 1000);
-        const mins = Math.floor(totalSeconds / 60);
-        const secs = totalSeconds % 60;
-        
-        // Use the 'tag' property to update the existing notification for this specific task
-        new Notification(`Upcoming: ${task.name}`, {
-            body: `Starts in ${mins}m ${secs}s`,
-            tag: `task-${task.id}`,
-            silent: true,
-            icon: 'https://cdn-icons-png.flaticon.com/512/2098/2098402.png' // Optional icon
-        });
-    }
+    // Initial render
+    renderTasks();
 </script>
+
 </body>
 </html>
